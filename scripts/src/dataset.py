@@ -1,3 +1,4 @@
+import random
 import re
 import shutil
 from pathlib import Path
@@ -11,6 +12,7 @@ warnings.filterwarnings("ignore")
 source_root = Path("../../../chest_xray")
 merged_root = Path("../../../chest_xray_merged")
 clean_root = Path("../../../chest_xray_clean")
+final_root = Path("../../../chest_xray_final")
 
 classes = ["normal", "pneumonia"]
 
@@ -88,56 +90,6 @@ def process_normal(threshold=0):
       "\nStep 3 & 4: Deduplicating NORMAL via perceptual hashing (Threshold ="
       f" {threshold})..."
   )
-import re
-import shutil
-from pathlib import Path
-import imagehash
-from PIL import Image
-
-# Configuration paths
-source_root = Path("../../../chest_xray_merged")
-clean_root = Path("../../../chest_xray_clean")
-
-# Initialize clean output directories
-for class_name in ["NORMAL", "PNEUMONIA"]:
-  (clean_root / class_name).mkdir(parents=True, exist_ok=True)
-
-
-def process_pneumonia():
-  source_dir = source_root / "PNEUMONIA"
-  dest_dir = clean_root / "PNEUMONIA"
-
-  seen_patients = set()
-  kept_count = 0
-  skipped_count = 0
-
-  for img_path in source_dir.glob("*"):
-    if not img_path.is_file():
-      continue
-
-    filename = img_path.name
-    # Extract explicit patient ID (e.g., person1945 from person1945_bacteria_4872.jpeg)
-    match = re.match(r"(person\d+)", filename)
-
-    if match:
-      patient_id = match.group(1)
-      if patient_id not in seen_patients:
-        seen_patients.add(patient_id)
-        shutil.copy2(img_path, dest_dir / filename)
-        kept_count += 1
-      else:
-        # Skip extra scans for the same patient
-        skipped_count += 1
-    else:
-      # Fallback if filename pattern differs unexpectedly
-      shutil.copy2(img_path, dest_dir / filename)
-      kept_count += 1
-
-  print(
-      f"🛡️ [PNEUMONIA] Kept {kept_count} unique patients (removed"
-      f" {skipped_count} multi-scan duplicates)."
-  )
-
   source_dir = merged_root / "normal"
   dest_dir = clean_root / "normal"
   dest_dir.mkdir(parents=True, exist_ok=True)
@@ -178,16 +130,52 @@ def process_pneumonia():
 
 
 # ==========================================
-# Execution & Step 5: Final Clean Dataset Ready
+# STEP 6: 70/15/15 Train/Val/Test Split
+# ==========================================
+def split_dataset(train_ratio=0.70, val_ratio=0.15):
+  print("\nStep 6: Partitioning dataset...")
+  if final_root.exists():
+    shutil.rmtree(final_root)
+
+  random.seed(42)
+
+  for class_name in classes:
+    source_dir = clean_root / class_name
+    files = [f for f in source_dir.iterdir() if f.is_file()]
+    random.shuffle(files)
+
+    total = len(files)
+    train_end = int(total * train_ratio)
+    val_end = train_end + int(total * val_ratio)
+
+    train_files = files[:train_end]
+    val_files = files[train_end:val_end]
+    test_files = files[val_end:]
+
+    for split_name, file_list in [
+        ("train", train_files),
+        ("val", val_files),
+        ("test", test_files),
+    ]:
+      dest_dir = final_root / split_name / class_name
+      dest_dir.mkdir(parents=True, exist_ok=True)
+
+      for f in file_list:
+        shutil.copy2(f, dest_dir / f.name)
+
+    print(
+        f"{class_name} Total: {total} | Train: {len(train_files)} (70%) |"
+        f" Val: {len(val_files)} (15%) | Test: {len(test_files)} (15%)"
+    )
+
+
+# ==========================================
+# Main Execution Flow
 # ==========================================
 if __name__ == "__main__":
   if clean_root.exists():
     shutil.rmtree(clean_root)
 
   process_pneumonia()
-  process_normal(threshold=0)  # threshold=0 ensures conservative, exact hash matching
-
-  print(
-      "\nStep 5: Pipeline complete! Clean, non-split dataset ready at:"
-      f" {clean_root.resolve()}"
-  )
+  process_normal(threshold=0)
+  split_dataset(train_ratio=0.70, val_ratio=0.15)
